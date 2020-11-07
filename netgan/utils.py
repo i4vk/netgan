@@ -9,6 +9,58 @@ import powerlaw
 from numba import jit
 
 
+def load_lcg(path):
+    """Load a SparseGraph from a CNF format file.
+
+    Parameters
+    ----------
+    path : str
+        Path of the file to load.
+
+    Returns
+    -------
+    sparse_graph : SparseGraph
+        Graph in sparse matrix format.
+
+    """
+
+    with open(path, 'r') as f:
+        sat_formula = f.read().split('\n')
+        
+    # Create adjacency matrix
+    for line in sat_formula:
+        line = line.split(' ')
+        if line[0] == 'p':
+            num_variables = int(line[2])
+            num_literals = num_variables * 2
+            num_clauses = int(line[3])
+            _N = num_clauses + num_literals
+            
+            adj_matrix = csr_matrix((_N,_N), dtype='int8')
+    
+    # Fill matrix
+    clause = num_literals
+    for line in sat_formula:
+        line = line.split(' ')
+        if line[0] != 'p' and line[0] != 'c' and len(line) > 1:
+            for literal in line:
+                if int(literal) == 0:
+                    continue
+                    
+                variable = abs(int(literal)) - 1     
+                literal = int(literal)
+                if literal > 0:
+                    adj_matrix[clause, variable] = 1
+                    adj_matrix[variable, clause] = 1
+                else:
+                    adj_matrix[clause, variable+num_variables] = 1
+                    adj_matrix[variable+num_variables, clause] = 1
+                    
+            clause += 1
+        
+    return adj_matrix, num_literals, num_clauses
+
+
 def load_npz(file_name):
     """Load a SparseGraph from a Numpy binary file.
 
