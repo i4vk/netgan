@@ -22,7 +22,7 @@ class NetGAN:
     NetGAN class, an implicit generative model for graphs using random walks.
     """
 
-    def __init__(self, N, rw_len, walk_generator, generator_layers=[40], discriminator_layers=[30],
+    def __init__(self, N, rw_len, lc_split, walk_generator, generator_layers=[40], discriminator_layers=[30],
                  W_down_generator_size=128, W_down_discriminator_size=128, batch_size=128, noise_dim=16,
                  noise_type="Gaussian", learning_rate=0.0003, disc_iters=3, wasserstein_penalty=10,
                  l2_penalty_generator=1e-7, l2_penalty_discriminator=5e-5, temp_start=5.0, min_temperature=0.5,
@@ -109,6 +109,7 @@ class NetGAN:
 
         self.N = N
         self.rw_len = rw_len
+        self.lc_split = lc_split
 
         self.noise_dim = self.params['noise_dim']
         self.G_layers = self.params['Generator_Layers']
@@ -116,8 +117,13 @@ class NetGAN:
         self.tau = tf.placeholder(1.0 , shape=(), name="temperature")
 
         # W_down and W_up for generator and discriminator
-        self.W_down_generator = tf.get_variable('Generator.W_Down',
-                                                shape=[self.N, self.params['W_Down_Generator_size']],
+        self.W_down_generator_even = tf.get_variable('Generator.W_Down_even',
+                                                shape=[self.lc_split, self.params['W_Down_Generator_size']],
+                                                dtype=tf.float32,
+                                                initializer=tf.contrib.layers.xavier_initializer())
+
+        self.W_down_generator_odd = tf.get_variable('Generator.W_Down_odd',
+                                                shape=[self.N-self.lc_split, self.params['W_Down_Generator_size']],
                                                 dtype=tf.float32,
                                                 initializer=tf.contrib.layers.xavier_initializer())
 
@@ -126,12 +132,19 @@ class NetGAN:
                                                     dtype=tf.float32,
                                                     initializer=tf.contrib.layers.xavier_initializer())
 
-        self.W_up = tf.get_variable("Generator.W_up", shape = [self.G_layers[-1], self.N],
+        self.W_up_even = tf.get_variable("Generator.W_up_even", shape = [self.G_layers[-1], self.lc_split],
                                     dtype=tf.float32,
                                     initializer=tf.contrib.layers.xavier_initializer())
 
-        self.b_W_up = tf.get_variable("Generator.W_up_bias", dtype=tf.float32, initializer=tf.zeros_initializer,
-                                      shape=self.N)
+        self.W_up_odd = tf.get_variable("Generator.W_up_odd", shape = [self.G_layers[-1], self.N-self.lc_split],
+                                    dtype=tf.float32,
+                                    initializer=tf.contrib.layers.xavier_initializer())
+
+        self.b_W_up_even = tf.get_variable("Generator.W_up_bias_even", dtype=tf.float32, initializer=tf.zeros_initializer,
+                                      shape=self.lc_split)
+
+        self.b_W_up_odd = tf.get_variable("Generator.W_up_bias_odd", dtype=tf.float32, initializer=tf.zeros_initializer,
+                                      shape=self.N-self.lc_split)
 
         self.generator_function = self.generator_recurrent
         self.discriminator_function = self.discriminator_recurrent
@@ -230,6 +243,7 @@ class NetGAN:
 
         return tf.argmax(self.generator_function(n_samples, reuse, z, gumbel=gumbel, legacy=legacy), axis=-1)
 
+
     def generator_recurrent(self, n_samples, reuse=None, z=None, gumbel=True, legacy=False):
         """
         Generate random walks using LSTM.
@@ -302,8 +316,12 @@ class NetGAN:
                 # Get LSTM output
                 output, state = self.stacked_lstm.call(inputs, state)
 
-                # Blow up to dimension N using W_up
-                output_bef = tf.matmul(output, self.W_up) + self.b_W_up
+                if i%2 == 0:
+                    # Blow up to dimension N using W_up_even
+                    output_bef = tf.matmul(output, self.W_up_even) + self.b_W_up_even
+                else:
+                    # Blow up to dimension N using W_up_odd
+                    output_bef = tf.matmul(output, self.W_up_odd) + self.b_W_up_odd
 
                 # Perform Gumbel softmax to ensure gradients flow
                 if gumbel:
@@ -312,7 +330,12 @@ class NetGAN:
                     output = tf.nn.softmax(output_bef)
 
                 # Back to dimension d
-                inputs = tf.matmul(output, self.W_down_generator)
+                if i%2 == 0:
+                    inputs = tf.matmul(output, self.W_down_generator_even)
+                    output = tf.concat([output, tf.zeros((output.shape[0], self.N-self.lc_split))], axis=1)
+                else:
+                    inputs = tf.matmul(output, self.W_down_generator_odd)
+                    output = tf.concat([tf.zeros((output.shape[0], self.lc_split)), output], axis=1)
 
                 outputs.append(output)
             outputs = tf.stack(outputs, axis=1)
